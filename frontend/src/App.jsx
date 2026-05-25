@@ -62,6 +62,7 @@ function App() {
   const [complaintForm, setComplaintForm] = useState({ title: '', category: 'power_cut', priority: 'medium', location_id: 2, description: '', address: '' })
   const [statusForm, setStatusForm] = useState({ location_id: 2, status: 'outage', voltage_level: 0, reason: '', estimated_restoration_at: '' })
   const [reportRange, setReportRange] = useState('monthly')
+  const [reportData, setReportData] = useState(null)
 
   const headers = useMemo(() => ({
     'Content-Type': 'application/json',
@@ -78,6 +79,12 @@ function App() {
     }
   }, [token])
 
+  useEffect(() => {
+    if (token) {
+      loadReports()
+    }
+  }, [token, reportRange])
+
   const visibleComplaints = useMemo(() => {
     return complaints
       .filter((complaint) => user?.role === 'admin' || complaint.user_id === user?.id)
@@ -90,6 +97,24 @@ function App() {
   }, [complaints, query, status, category, user])
 
   const analytics = useMemo(() => {
+    if (reportData) {
+      const categoryCounts = categories.map((name) => ({ name, total: Number(reportData.complaints_by_category?.[name] || 0) }))
+      return {
+        activeEvents: Number(reportData.totals?.active_events || 0),
+        avgVoltage: Number(reportData.totals?.avg_voltage || 0),
+        consumers: Number(reportData.totals?.consumers || 0),
+        locationsCount: Number(reportData.totals?.locations || 0),
+        open: Number(reportData.totals?.open_complaints || 0),
+        resolved: Number(reportData.totals?.resolved_complaints || 0),
+        averageRating: Number(reportData.totals?.average_rating || 0),
+        categoryCounts,
+        monthly: reportData.timeline?.length ? reportData.timeline : [],
+        powerEventsByStatus: reportData.power_events_by_status || {},
+        reportScope: reportData.scope,
+        reportPeriod: reportData.period,
+      }
+    }
+
     const activeEvents = locations.filter((item) => current(item).status !== 'normal').length
     const avgVoltage = Math.round(locations.reduce((sum, item) => sum + Number(current(item).voltage_level || 0), 0) / Math.max(locations.length, 1))
     const open = complaints.filter((item) => !['resolved', 'closed', 'rejected'].includes(item.status)).length
@@ -102,8 +127,21 @@ function App() {
       { month: 'Apr', total: 46 },
       { month: 'May', total: complaints.length + 58 },
     ]
-    return { activeEvents, avgVoltage, open, resolved, categoryCounts, monthly }
-  }, [locations, complaints])
+    return {
+      activeEvents,
+      avgVoltage,
+      consumers: locations.reduce((sum, item) => sum + Number(item.consumer_count || 0), 0),
+      locationsCount: locations.length,
+      open,
+      resolved,
+      averageRating: 0,
+      categoryCounts,
+      monthly,
+      powerEventsByStatus: {},
+      reportScope: user?.role || 'demo',
+      reportPeriod: null,
+    }
+  }, [locations, complaints, reportData, user])
 
   async function request(path, options = {}) {
     const response = await fetch(`${API}${path}`, { ...options, headers: { ...headers, ...(options.headers || {}) } })
@@ -127,6 +165,15 @@ function App() {
       setComplaints((payload.data || payload).map(normalizeComplaint))
     } catch {
       setComplaints(demoComplaints)
+    }
+  }
+
+  async function loadReports() {
+    try {
+      const payload = await request(`/reports?range=${reportRange}`)
+      setReportData(payload)
+    } catch {
+      setReportData(null)
     }
   }
 
@@ -217,6 +264,7 @@ function App() {
       setToast('Complaint saved in demo mode.')
     }
     setComplaintForm({ title: '', category: 'power_cut', priority: 'medium', location_id: 2, description: '', address: '' })
+    loadReports()
   }
 
   async function updateComplaint(complaint, nextStatus) {
@@ -233,6 +281,7 @@ function App() {
     } catch {
       setToast('Workflow updated in demo mode.')
     }
+    loadReports()
   }
 
   async function submitPowerStatus(event) {
@@ -251,11 +300,21 @@ function App() {
     } catch {
       setToast('Power status updated in demo mode.')
     }
+    loadReports()
   }
 
-  function rateComplaint(complaint, rating) {
+  async function rateComplaint(complaint, rating) {
     setComplaints(complaints.map((item) => item.id === complaint.id ? { ...item, rating: { rating, comments: 'Consumer rating submitted.' } } : item))
-    setToast('Feedback rating saved.')
+    try {
+      await request(`/complaints/${complaint.id}/rate`, {
+        method: 'POST',
+        body: JSON.stringify({ rating, comments: 'Consumer rating submitted.' }),
+      })
+      setToast('Feedback rating saved.')
+    } catch {
+      setToast('Feedback rating saved in demo mode.')
+    }
+    loadReports()
   }
 
   if (!user) {
@@ -312,7 +371,7 @@ function App() {
         <header className="topbar">
           <div>
             <p className="eyebrow">Live electricity operations</p>
-            <h1>Feedback of Power supply position</h1>
+            <h1>Power Supply Feedback</h1>
             <div className="role-summary">
               <span className={`mode-chip ${user.role}`}>{user.role === 'admin' ? 'Admin Dashboard' : 'User Dashboard'}</span>
               <span>{user.role === 'admin' ? 'You can update supply status, resolve complaints, manage reports and monitor all areas.' : 'You can check your area status, submit complaints, track progress and rate resolution.'}</span>
@@ -329,7 +388,7 @@ function App() {
         {activeView === 'dashboard' && (
           <>
             <section className="kpi-grid">
-              <Metric label="Consumers" value={locations.reduce((sum, item) => sum + Number(item.consumer_count || 0), 0).toLocaleString()} note="registered in covered areas" />
+              <Metric label="Consumers" value={analytics.consumers.toLocaleString()} note={user.role === 'admin' ? 'registered in covered areas' : 'registered in your area'} />
               <Metric label="Active Events" value={analytics.activeEvents} note="outage, maintenance, restoring" tone="warn" />
               <Metric label="Avg Voltage" value={`${analytics.avgVoltage}%`} note="across monitored feeders" />
               <Metric label="Open Tickets" value={analytics.open} note="complaints needing action" tone="info" />
@@ -337,7 +396,7 @@ function App() {
             <FeatureGuide role={user.role} setActiveView={setActiveView} />
             <section className="content-grid">
               <LiveStatus locations={locations} />
-              <Reports analytics={analytics} reportRange={reportRange} setReportRange={setReportRange} />
+              <Reports analytics={analytics} reportRange={reportRange} setReportRange={setReportRange} user={user} />
             </section>
           </>
         )}
@@ -364,7 +423,7 @@ function App() {
 
         {activeView === 'notifications' && <Notifications notifications={notifications} />}
 
-        {activeView === 'reports' && <Reports analytics={analytics} reportRange={reportRange} setReportRange={setReportRange} full />}
+        {activeView === 'reports' && <Reports analytics={analytics} reportRange={reportRange} setReportRange={setReportRange} user={user} full />}
 
         {activeView === 'admin' && user.role === 'admin' && (
           <AdminPanel
@@ -396,7 +455,7 @@ function AuthScreen({ mode, setMode, form, setForm, locations, login, register, 
         <div className="hero-copy">
           <div className="brand-mark">PS</div>
           <p className="eyebrow">Electricity supply intelligence</p>
-          <h1>Feedback of Power supply position</h1>
+          <h1>Power Supply Feedback</h1>
           <p>Monitor live area supply, submit power complaints, track restoration, and manage outage workflows from one responsive control room.</p>
         </div>
         <div className="power-map">
@@ -620,20 +679,43 @@ function Notifications({ notifications }) {
   )
 }
 
-function Reports({ analytics, reportRange, setReportRange, full = false }) {
+function Reports({ analytics, reportRange, setReportRange, user, full = false }) {
   const maxMonthly = Math.max(...analytics.monthly.map((item) => item.total), 1)
   const maxCategory = Math.max(...analytics.categoryCounts.map((item) => item.total), 1)
+  const periodText = analytics.reportPeriod
+    ? `${analytics.reportPeriod.from} to ${analytics.reportPeriod.to}`
+    : 'Demo report data'
+
   return (
     <section className={`panel ${full ? 'full-panel' : ''}`}>
       <div className="panel-head">
         <div>
           <p className="eyebrow">Charts and reports</p>
-          <h2>Power Analysis</h2>
+          <h2>{user?.role === 'admin' ? 'Admin Power Analysis' : 'My Power Analysis'}</h2>
+          <small className="helper-text">{periodText}</small>
         </div>
         <select value={reportRange} onChange={(event) => setReportRange(event.target.value)}>
           <option value="daily">Daily</option>
           <option value="monthly">Monthly</option>
         </select>
+      </div>
+      <div className="report-strip">
+        <article>
+          <span>Open</span>
+          <strong>{analytics.open}</strong>
+        </article>
+        <article>
+          <span>Resolved</span>
+          <strong>{analytics.resolved}</strong>
+        </article>
+        <article>
+          <span>Avg Voltage</span>
+          <strong>{analytics.avgVoltage}%</strong>
+        </article>
+        <article>
+          <span>Rating</span>
+          <strong>{analytics.averageRating || '-'}</strong>
+        </article>
       </div>
       <div className="chart-layout">
         <div className="bar-chart">
@@ -665,7 +747,7 @@ function AdminPanel({ locations, complaints, statusForm, setStatusForm, submitPo
         <div>
           <p className="eyebrow">Admin control</p>
           <h2>Update Power Status</h2>
-          <small className="helper-text">Ye update users ke area cards aur notifications me dikhega.</small>
+          <small className="helper-text">Published updates appear instantly on area cards and notifications.</small>
         </div>
         <select value={statusForm.location_id} onChange={(event) => setStatusForm({ ...statusForm, location_id: Number(event.target.value) })}>
           {locations.map((location) => <option key={location.id} value={location.id}>{location.name}</option>)}
@@ -682,7 +764,7 @@ function AdminPanel({ locations, complaints, statusForm, setStatusForm, submitPo
         <div>
           <p className="eyebrow">Resolution workflow</p>
           <h2>Priority Queue</h2>
-          <small className="helper-text">Admin yahan se pending complaint ko one-click resolve kar sakta hai.</small>
+          <small className="helper-text">Resolve urgent pending complaints directly from this queue.</small>
         </div>
         <div className="mini-queue">
           {complaints.filter((item) => !['resolved', 'closed'].includes(item.status)).slice(0, 6).map((complaint) => (

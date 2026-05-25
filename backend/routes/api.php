@@ -5,6 +5,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\ComplaintController;
 use App\Http\Controllers\Api\LocationController;
 use App\Http\Controllers\Api\PowerStatusController;
+use App\Http\Controllers\Api\ReportController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -31,6 +32,7 @@ Route::middleware('auth:api')->group(function () {
 
     Route::apiResource('complaints', ComplaintController::class);
     Route::post('/complaints/{complaint}/rate', [ComplaintController::class, 'rate']);
+    Route::get('/reports', [ReportController::class, 'index']);
 
     Route::middleware('admin')->group(function () {
         Route::apiResource('locations', LocationController::class)->except(['index', 'show']);
